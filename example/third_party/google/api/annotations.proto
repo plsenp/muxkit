@@ -1,0 +1,13 @@
+// 最小化的 google.api.http 方法注解，仅用于本地端到端验证。
+syntax = "proto3";
+
+package google.api;
+
+import "google/api/http.proto";
+import "google/protobuf/descriptor.proto";
+
+option go_package = "google.golang.org/genproto/googleapis/api/annotations;annotations";
+
+extend google.protobuf.MethodOptions {
+  HttpRule http = 72295728;
+}

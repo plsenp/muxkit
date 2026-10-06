@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/annotations.proto";
+
+option go_package = "example.com/demo/pb";
+
+service UserService {
+  // 获取单个用户
+  rpc GetUser(GetUserRequest) returns (User) {
+    option (google.api.http) = {get: "/v1/users/{id}"};
+  }
+
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (google.api.http) = {get: "/v1/users"};
+  }
+
+  rpc CreateUser(CreateUserRequest) returns (User) {
+    option (google.api.http) = {post: "/v1/users" body: "*"};
+  }
+
+  // body 只映射到 user 字段，id 仍然走路径
+  rpc UpdateUser(UpdateUserRequest) returns (User) {
+    option (google.api.http) = {patch: "/v1/users/{id}" body: "user"};
+  }
+
+  rpc DeleteUser(DeleteUserRequest) returns (Empty) {
+    option (google.api.http) = {delete: "/v1/users/{id}"};
+  }
+
+  // additional_bindings：同一个方法挂两个路由
+  rpc GetUserByEmail(GetUserByEmailRequest) returns (User) {
+    option (google.api.http) = {
+      get: "/v1/users/email/{email}"
+      additional_bindings {get: "/v1/internal/users/{email}"}
+    };
+  }
+}
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_BANNED = 2;
+}
+
+message User {
+  string id = 1;
+  string name = 2;
+  int32 age = 3;
+  repeated string tags = 4;
+}
+
+message Empty {}
+
+message GetUserRequest {
+  string id = 1;
+  bool verbose = 2;
+}
+
+message ListUsersRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  Status status = 3;
+  repeated int32 tag_ids = 4;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  int32 total = 2;
+  Status status = 3;
+  repeated int32 tag_ids = 4;
+  int32 page = 5;
+}
+
+message CreateUserRequest {
+  string name = 1;
+  int32 age = 2;
+  repeated string tags = 3;
+}
+
+message UpdateUserRequest {
+  string id = 1;
+  User user = 2;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+}
+
+message GetUserByEmailRequest {
+  string email = 1;
+}
