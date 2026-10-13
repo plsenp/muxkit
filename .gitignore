@@ -1,2 +1,37 @@
 .DS_Store
 **/.DS_Store
+.workbuddy/
+.trae/
+
+# ---------- 编译产物 ----------
+
+# Go 构建出的可执行文件没有扩展名，*.exe 那套规则管不到，只能按目录名点名。
+# 在包目录下跑 go build ./... 会就地产出二进制，这种最容易误提交。
+# 二进制名取 module path 的最后一段（example.com/demo → demo），不是目录名。
+# 新增 main 包时记得同步补一行。
+/cmd/protoc-gen-go-muxkit/protoc-gen-go-muxkit
+/example/demo
+
+# Windows 可执行 / 动态库
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# go test -c 产出的测试二进制（不是 _test.go 源码）
+*.test
+
+# 覆盖率与 pprof 输出
+*.out
+*.prof
+*.coverprofile
+
+# 构建输出目录
+/bin/
+/dist/
+/build/
+
+# Go workspace
+go.work
+go.work.sum

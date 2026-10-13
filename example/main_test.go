@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"example.com/demo/pb"
-	"muxkit"
-	"muxkit/adapter/kinopenapi"
-	"muxkit/adapter/validator"
+	"github.com/plsenp/muxkit"
+	"github.com/plsenp/muxkit/adapter/kinopenapi"
+	"github.com/plsenp/muxkit/adapter/validator"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )
@@ -20,6 +20,7 @@ import (
 func newTestRouter() *muxkit.Router {
 	r := muxkit.New(muxkit.WithValidator(validator.New()))
 	pb.RegisterUserServiceRoutes(r, &userService{})
+	pb.RegisterOptionalServiceRoutes(r, &optionalService{})
 	r.GET("/legacy/users/{id}", legacyList).
 		OperationID("LegacyListUsers").Tags("legacy").Summary("传统方式：struct tag 绑定")
 	kinopenapi.Serve(r, "/openapi.json", &openapi3.Info{Title: "用户服务", Version: "v1"},

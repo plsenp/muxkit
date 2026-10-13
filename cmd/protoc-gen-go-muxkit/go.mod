@@ -1,4 +1,4 @@
-module muxkit/cmd/protoc-gen-go-muxkit
+module github.com/plsenp/muxkit/cmd/protoc-gen-go-muxkit
 
 go 1.27
 

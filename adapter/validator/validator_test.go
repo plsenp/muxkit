@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"muxkit"
-	"muxkit/adapter/validator"
+	"github.com/plsenp/muxkit"
+	"github.com/plsenp/muxkit/adapter/validator"
 )
 
 type Req struct {

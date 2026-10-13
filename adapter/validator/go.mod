@@ -1,10 +1,10 @@
-module muxkit/adapter/validator
+module github.com/plsenp/muxkit/adapter/validator
 
 go 1.27
 
 require (
 	github.com/go-playground/validator/v10 v10.30.4
-	muxkit v0.0.0
+	github.com/plsenp/muxkit v0.0.0
 )
 
 require (
@@ -16,6 +16,7 @@ require (
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace muxkit => ../../
+replace github.com/plsenp/muxkit => ../../

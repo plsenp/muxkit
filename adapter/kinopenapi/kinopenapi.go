@@ -17,7 +17,7 @@ import (
 	"reflect"
 	"strings"
 
-	"muxkit"
+	"github.com/plsenp/muxkit"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )

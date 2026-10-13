@@ -16,7 +16,7 @@ import (
 	"reflect"
 	"strings"
 
-	"muxkit"
+	"github.com/plsenp/muxkit"
 
 	val "github.com/go-playground/validator/v10"
 )

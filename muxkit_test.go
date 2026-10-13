@@ -480,6 +480,151 @@ func TestCustomValidator_CanBeReplaced(t *testing.T) {
 	}
 }
 
+// ---------- 指针字段：proto3 optional 在 Go 里的形态 ----------
+//
+// optional 的语义是"能区分没传和传了零值"，所以绑定的要求不是"赋上值"，
+// 而是参数缺失时保持 nil。两条绑定路径（显式声明 / struct tag）都要满足。
+
+type ptrReq struct {
+	Name  *string  `json:"name"`
+	Page  *int32   `json:"page"`
+	Flag  *bool    `json:"flag"`
+	Ratio *float64 `json:"ratio"`
+	Inner *ptrInner
+}
+
+type ptrInner struct {
+	ID string `json:"id"`
+}
+
+// 显式模式：Params 声明绑到指针字段
+func TestExplicitBinding_PointerFields(t *testing.T) {
+	var got *ptrReq
+	r := muxkit.New()
+	r.GET("/p/{name}", func(ctx context.Context, in *ptrReq) (*User, error) {
+		got = in
+		return &User{}, nil
+	}).Path("name", "Name").Query("page", "Page").Query("flag", "Flag").Query("ratio", "Ratio")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p/yan?page=3&flag=true&ratio=1.5", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got.Name == nil || *got.Name != "yan" {
+		t.Errorf("path 没绑到指针字段：%v", got.Name)
+	}
+	if got.Page == nil || *got.Page != 3 {
+		t.Errorf("query 没绑到指针字段：%v", got.Page)
+	}
+	if got.Flag == nil || !*got.Flag {
+		t.Errorf("bool 指针没绑上：%v", got.Flag)
+	}
+	if got.Ratio == nil || *got.Ratio != 1.5 {
+		t.Errorf("float 指针没绑上：%v", got.Ratio)
+	}
+	if got.Inner != nil {
+		t.Errorf("没传的嵌套指针不该被分配：%v", got.Inner)
+	}
+}
+
+// 参数缺失时保持 nil：optional 的全部意义就在这里
+func TestExplicitBinding_AbsentPointerStaysNil(t *testing.T) {
+	var got *ptrReq
+	r := muxkit.New()
+	r.GET("/p/{name}", func(ctx context.Context, in *ptrReq) (*User, error) {
+		got = in
+		return &User{}, nil
+	}).Path("name", "Name").Query("page", "Page").Query("flag", "Flag").Query("ratio", "Ratio")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p/yan", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got.Name == nil {
+		t.Error("传了的 path 参数丢了")
+	}
+	if got.Page != nil || got.Flag != nil || got.Ratio != nil {
+		t.Errorf("没传的 optional 字段必须是 nil：page=%v flag=%v ratio=%v", got.Page, got.Flag, got.Ratio)
+	}
+}
+
+// 显式传零值不等于没传：也要落到指针上
+func TestExplicitBinding_ZeroValueIsPresent(t *testing.T) {
+	var got *ptrReq
+	r := muxkit.New()
+	r.GET("/p", func(ctx context.Context, in *ptrReq) (*User, error) {
+		got = in
+		return &User{}, nil
+	}).Query("page", "Page").Query("flag", "Flag")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p?page=0&flag=false", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got.Page == nil || *got.Page != 0 {
+		t.Errorf("显式传 0 应绑上：%v", got.Page)
+	}
+	if got.Flag == nil || *got.Flag {
+		t.Errorf("显式传 false 应绑上：%v", got.Flag)
+	}
+}
+
+// 嵌套指针：fieldByPath 必须能沿途分配
+func TestExplicitBinding_NestedPointer(t *testing.T) {
+	var got *ptrReq
+	r := muxkit.New()
+	r.GET("/p", func(ctx context.Context, in *ptrReq) (*User, error) {
+		got = in
+		return &User{}, nil
+	}).Query("innerId", "Inner.ID")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/p?innerId=n-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got.Inner == nil || got.Inner.ID != "n-1" {
+		t.Errorf("嵌套指针没绑上：%+v", got.Inner)
+	}
+}
+
+// struct tag 模式（bindByTag，走 form 库）同样支持指针字段
+func TestTagBinding_PointerFields(t *testing.T) {
+	type tagReq struct {
+		Name *string `query:"name"`
+		Page *int    `query:"page"`
+		Flag *bool   `query:"flag"`
+		ID   *string `path:"id"`
+	}
+	var got *tagReq
+	r := muxkit.New()
+	r.GET("/t/{id}", func(ctx context.Context, in *tagReq) (*User, error) {
+		got = in
+		return &User{}, nil
+	})
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/t/u-1?name=yan&page=7&flag=true", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
+	}
+	if got.ID == nil || *got.ID != "u-1" {
+		t.Errorf("path 指针没绑上：%v", got.ID)
+	}
+	if got.Name == nil || *got.Name != "yan" {
+		t.Errorf("query 指针没绑上：%v", got.Name)
+	}
+	if got.Page == nil || *got.Page != 7 {
+		t.Errorf("int 指针没绑上：%v", got.Page)
+	}
+	if got.Flag == nil || !*got.Flag {
+		t.Errorf("bool 指针没绑上：%v", got.Flag)
+	}
+}
+
 // TestHandlerContextHeaderOnSuccess 是 Set-Cookie 事故的回归测试：
 // writeError 一直会应用 HandlerContext 的自定义头，但成功路径此前
 // 从不应用 —— 登录接口的 Set-Cookie 在 200 响应上静默消失。
