@@ -7,12 +7,17 @@
 //	    api.proto
 //
 // 生成三类东西：
-//  1. RegisterXxxRoutes：把 grpc service 实现挂到 muxkit 路由上
-//  2. bindXxxRequest：完整的参数绑定函数（path / query / body），零反射
-//  3. 路由的文档元数据（operationId / tags / summary）
+//  1. XxxHandler：与 protoc-gen-go-grpc 的 XxxServer 方法签名一致的服务接口——
+//     muxkit 不强依赖 grpc，同一个实现可以同时注册 grpc.Server 和 muxkit.Router
+//  2. RegisterXxxRoutes：把 service 实现挂到 muxkit 路由上
+//  3. bindXxxRequest：完整的参数绑定函数（path / query / body），零反射
 //
-// 注意本插件**不生成**参数校验和 OpenAPI 文档：
-// 校验交给 buf protovalidate（约束写在 proto 里），文档交给 gnostic。
+// 注意本插件**不生成**参数校验、OpenAPI 文档和响应渲染函数：
+// 校验交给 buf protovalidate（约束写在 proto 里），文档交给 gnostic——
+// gnostic 直接从 proto 生成 OpenAPI，所以生成的路由也不挂
+// OperationID / Tags / Summary 这些文档元数据；
+// 渲染直接引用 muxkit.ProtoJSONRenderer（protojson + protobuf JSON 约定），
+// proto 的 JSON 约定是通用逻辑，不值得在每个生成文件里抄一遍。
 //
 // 绑定才是没有现成方案的部分——标准库 ServeMux 的 path 参数只能通过
 // r.PathValue(key) 逐个取，不像 query / header 是 url.Values 能被通用库整体处理。
@@ -31,16 +36,21 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/pluginpb"
 )
 
 // muxkitImport 是核心库的 Go import path，可用 muxkit_import 参数覆盖。
-var muxkitImport = "muxkit"
+var muxkitImport = "github.com/plsenp/muxkit"
 
 var pathParamRe = regexp.MustCompile(`\{([^}/]+)\}`)
 
 func main() {
 	var flags flagSet
 	protogen.Options{}.Run(func(gen *protogen.Plugin) error {
+		// 必须显式声明支持 proto3 optional：否则 protoc 只要看到 proto3 文件里有
+		// optional 字段就直接拒绝生成（"hasn't been updated to support optional
+		// fields in proto3"），连插件函数都不会被调用。
+		gen.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
 		flags.parse(gen.Request.GetParameter())
 		for _, f := range gen.Files {
 			if !f.Generate || len(f.Services) == 0 {
@@ -96,7 +106,7 @@ func generate(gen *protogen.Plugin, f *protogen.File) {
 	for _, svc := range f.Services {
 		var stmts []string
 		for _, m := range svc.Methods {
-			code := buildMethod(g, m, svc, im)
+			code := buildMethod(gen, g, m, im)
 			if code == nil {
 				continue
 			}
@@ -107,8 +117,9 @@ func generate(gen *protogen.Plugin, f *protogen.File) {
 			continue
 		}
 		var b strings.Builder
+		writeHandlerInterface(&b, g, svc, im)
 		fmt.Fprintf(&b, "// Register%sRoutes 把 %s 的实现挂到 HTTP 路由上。\n", svc.GoName, svc.GoName)
-		fmt.Fprintf(&b, "func Register%sRoutes(r *muxkit.Router, srv %sServer) {\n", svc.GoName, svc.GoName)
+		fmt.Fprintf(&b, "func Register%sRoutes(r *muxkit.Router, srv %sHandler) {\n", svc.GoName, svc.GoName)
 		for _, s := range stmts {
 			_, _ = b.WriteString("\t" + s + "\n")
 		}
@@ -126,12 +137,6 @@ func generate(gen *protogen.Plugin, f *protogen.File) {
 	g.P()
 	g.P("package ", f.GoPackageName)
 	g.P()
-	// 只要有绑定函数，就一定要 protojson 渲染器：响应不能用 encoding/json
-	if len(binds) > 0 {
-		im.add("google.golang.org/protobuf/proto")
-		im.add("reflect")
-		binds = append(binds, protoRendererSource())
-	}
 
 	g.P("import (")
 	paths := append(im.list(), muxkitImport)
@@ -153,43 +158,36 @@ func generate(gen *protogen.Plugin, f *protogen.File) {
 	}
 }
 
-// protoRendererSource 生成统一的响应渲染函数。
+// writeHandlerInterface 生成与 protoc-gen-go-grpc 的 XxxServer 同签名的服务接口。
 //
-// 不能用 encoding/json：在 protobuf 的 JSON 约定里 int64 是字符串、enum 是名字，
-// 而生成的结构体上没有对应的 encoding/json 语义，直接渲染会输出数字，
-// 和 grpc-gateway / protovalidate 生态对不上。
-func protoRendererSource() string {
-	return `// renderProtoMessage 用 protojson 渲染响应，保证与 protobuf 生态的 JSON 约定一致。
-func renderProtoMessage(w http.ResponseWriter, r *http.Request, v any) error {
-	if v == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}
-	m, ok := v.(proto.Message)
-	if !ok {
-		return muxkit.JSONRenderer{}.Render(w, r, v)
-	}
-	b, err := protojson.Marshal(m)
-	if err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if c := muxkit.Ctx(r.Context()); c != nil {
-		if code := c.Status(); code != 0 {
-			w.WriteHeader(code)
+// 不能直接复用 grpc 生成的接口：它住在 _grpc.pb.go 里，整个文件 import 了
+// google.golang.org/grpc，还要求 embed UnimplementedXxxServer——这就把 grpc
+// 变成了硬依赖。这里只抄方法签名，接口取名 XxxHandler 以避免同包重名，
+// 实现 grpc Server 的同一个结构体不用改一行就能挂到 muxkit 上。
+//
+// 流式方法不收录：muxkit 的 handler 形状只支持一元方法，
+// 而流式签名里的 grpc.ServerStream 会重新把 grpc 拉进来。
+func writeHandlerInterface(b *strings.Builder, g *protogen.GeneratedFile, svc *protogen.Service, im *imports) {
+	im.add("context")
+	fmt.Fprintf(b, "// %sHandler 是 muxkit 的服务接口，方法签名与 protoc-gen-go-grpc 生成的\n", svc.GoName)
+	fmt.Fprintf(b, "// %sServer 一致（不含 mustEmbed），同一个实现可以同时注册 grpc 与 muxkit。\n", svc.GoName)
+	fmt.Fprintf(b, "type %sHandler interface {\n", svc.GoName)
+	for _, m := range svc.Methods {
+		if m.Desc.IsStreamingClient() || m.Desc.IsStreamingServer() {
+			continue
 		}
+		for _, line := range commentLines(m) {
+			fmt.Fprintf(b, "\t// %s\n", line)
+		}
+		fmt.Fprintf(b, "\t%s(context.Context, *%s) (*%s, error)\n",
+			m.GoName,
+			g.QualifiedGoIdent(m.Input.GoIdent),
+			g.QualifiedGoIdent(m.Output.GoIdent))
 	}
-	_, err = w.Write(b)
-	return err
-}
-`
+	b.WriteString("}\n\n")
 }
 
-func buildMethod(g *protogen.GeneratedFile, m *protogen.Method, svc *protogen.Service, im *imports) *methodCode {
+func buildMethod(gen *protogen.Plugin, g *protogen.GeneratedFile, m *protogen.Method, im *imports) *methodCode {
 	opts, _ := m.Desc.Options().(*descriptorpb.MethodOptions)
 	if opts == nil || !proto.HasExtension(opts, annotations.E_Http) {
 		return nil
@@ -205,21 +203,21 @@ func buildMethod(g *protogen.GeneratedFile, m *protogen.Method, svc *protogen.Se
 		if method == "" || path == "" {
 			continue
 		}
-		opID := string(m.GoName)
 		suffix := ""
 		if i > 0 {
-			opID = fmt.Sprintf("%s_%d", m.GoName, i)
 			suffix = fmt.Sprintf("_%d", i)
 		}
 		bindName := fmt.Sprintf("bind%sRequest%s", m.GoName, suffix)
 
 		body, err := buildBindFunc(g, m, path, br.GetBody(), method, bindName, im)
 		if err != nil {
-			// 生成不了的绑定就退回反射绑定，别让 protoc 整个失败
-			regs = append(regs, buildReg(m, svc, method, path, opID, ""))
-			continue
+			// 绑定生成不出来就报出来，让 protoc 失败。
+			// 兜底成反射绑定更糟：protobuf 结构体没有 path/query tag，
+			// 反射什么都绑不上，而 protoc 却显示成功——参数会静默丢失。
+			gen.Error(err)
+			return nil
 		}
-		regs = append(regs, buildReg(m, svc, method, path, opID, bindName))
+		regs = append(regs, buildReg(m, method, path, bindName))
 		binds = append(binds, body)
 	}
 	if len(regs) == 0 {
@@ -233,17 +231,16 @@ func buildMethod(g *protogen.GeneratedFile, m *protogen.Method, svc *protogen.Se
 }
 
 // buildReg 生成路由注册语句。绑定不再靠链式声明，而是直接挂生成的函数。
-func buildReg(m *protogen.Method, svc *protogen.Service, method, path, opID, bindName string) string {
+//
+// 不生成 OperationID / Tags / Summary：protobuf 路线的 OpenAPI 文档
+// 由 gnostic 直接从 proto 生成，不经过路由元数据。
+func buildReg(m *protogen.Method, method, path, bindName string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "r.%s(%q, srv.%s).\n\t\tOperationID(%q).\n\t\tTags(%q).",
-		method, path, m.GoName, opID, svc.GoName)
-	if c := leadingComment(m); c != "" {
-		fmt.Fprintf(&b, "\n\t\tSummary(%q).", c)
-	}
+	fmt.Fprintf(&b, "r.%s(%q, srv.%s).", method, path, m.GoName)
 	if bindName != "" {
 		fmt.Fprintf(&b, "\n\t\tBindFunc(%s).", bindName)
 	}
-	b.WriteString("\n\t\tRenderer(muxkit.RendererFunc(renderProtoMessage))")
+	b.WriteString("\n\t\tRenderer(muxkit.ProtoJSONRenderer{})")
 	return b.String()
 }
 
@@ -299,11 +296,16 @@ func buildBindFunc(g *protogen.GeneratedFile, m *protogen.Method, path, bodyFiel
 		im.add("google.golang.org/protobuf/encoding/protojson")
 		target := "dst"
 		if effectiveBody != "*" {
-			if f := findField(m.Input, effectiveBody); f != nil && f.Message != nil {
-				fmt.Fprintf(&b, "\tif dst.%s == nil {\n\t\tdst.%s = &%s{}\n\t}\n",
-					f.GoName, f.GoName, g.QualifiedGoIdent(f.Message.GoIdent))
-				target = "dst." + string(f.GoName)
+			f := findField(m.Input, effectiveBody)
+			// body 只能指向 message 字段：protojson 反序列化的是整条消息，
+			// 指向标量（含 proto3 optional 标量）时没有可写入的目标。
+			if f == nil || f.Message == nil {
+				return "", fmt.Errorf("body %q 不是 %s 的 message 字段（body 只能是 message 字段或 \"*\"）",
+					effectiveBody, m.Input.GoIdent.GoName)
 			}
+			fmt.Fprintf(&b, "\tif dst.%s == nil {\n\t\tdst.%s = &%s{}\n\t}\n",
+				f.GoName, f.GoName, g.QualifiedGoIdent(f.Message.GoIdent))
+			target = "dst." + string(f.GoName)
 		}
 		b.WriteString("\tif r.Body != nil && r.ContentLength != 0 {\n")
 		b.WriteString("\t\tdata, err := io.ReadAll(r.Body)\n")
@@ -387,55 +389,93 @@ func queryField(g *protogen.GeneratedFile, b *strings.Builder, f *protogen.Field
 	return true
 }
 
+// isPointerField 报告该字段在 protoc-gen-go 生成的 Go 结构体里是否是指针。
+//
+// 两种情况是指针：message 字段恒为指针；proto3 optional（以及 proto2）的标量 /
+// 枚举带 presence，protoc-gen-go 同样生成指针，用来区分"没传"和"传了零值"。
+// 绑到这类字段上不能写 dst.F = v，得先把值落到变量再取地址。
+func isPointerField(f *protogen.Field) bool {
+	if f.Message != nil {
+		return true
+	}
+	return f.Desc.HasPresence() && !f.Desc.IsList() && !f.Desc.IsMap()
+}
+
+// assignValue 生成把值表达式 expr 写入 dst 的语句。
+// ptr 为 true 时 dst 是指针字段，值必须先落地成变量才能取地址。
+func assignValue(dst, expr string, ptr bool) string {
+	if !ptr {
+		return dst + " = " + expr
+	}
+	// tmp 的作用域由调用方保证：每个 path / query 参数各自一个 if 块，不会撞名
+	return "tmp := " + expr + "\n" + dst + " = &tmp"
+}
+
+// guarded 生成"转换失败就返回 BindError，成功则赋值"的 if/else 块。
+// parse 是形如 strconv.ParseInt(v, 10, 32) 的双返回值表达式。
+func guarded(varName, parse, fail, assign string) string {
+	return fmt.Sprintf("if %s, err := %s; err != nil {\n\t%s\n} else {\n\t%s\n}",
+		varName, parse, fail, assign)
+}
+
 // scalarAssign 生成把字符串 src 转成目标类型并写入 dst 的代码。
+// 目标字段可能是 proto3 optional 的指针，赋值形态由 assignValue 决定。
 func scalarAssign(g *protogen.GeneratedFile, dst string, f *protogen.Field, src string, im *imports) (string, error) {
 	wire := string(f.Desc.JSONName())
+	ptr := isPointerField(f)
 	fail := func() string {
 		return fmt.Sprintf("return &muxkit.BindError{Field: %q, Err: err}", wire)
 	}
 
 	switch f.Desc.Kind() {
 	case protoreflect.StringKind:
-		return fmt.Sprintf("%s = %s", dst, src), nil
+		return assignValue(dst, src, ptr), nil
 
 	case protoreflect.BoolKind:
 		im.add("strconv")
-		return fmt.Sprintf("if b, err := strconv.ParseBool(%s); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = b\n\t\t}", src, fail(), dst), nil
+		return guarded("b", "strconv.ParseBool("+src+")", fail(), assignValue(dst, "b", ptr)), nil
 
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseInt(%s, 10, 32); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = int32(n)\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseInt("+src+", 10, 32)", fail(), assignValue(dst, "int32(n)", ptr)), nil
 
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseInt(%s, 10, 64); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = n\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseInt("+src+", 10, 64)", fail(), assignValue(dst, "n", ptr)), nil
 
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseUint(%s, 10, 32); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = uint32(n)\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseUint("+src+", 10, 32)", fail(), assignValue(dst, "uint32(n)", ptr)), nil
 
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseUint(%s, 10, 64); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = n\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseUint("+src+", 10, 64)", fail(), assignValue(dst, "n", ptr)), nil
 
 	case protoreflect.FloatKind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseFloat(%s, 32); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = float32(n)\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseFloat("+src+", 32)", fail(), assignValue(dst, "float32(n)", ptr)), nil
 
 	case protoreflect.DoubleKind:
 		im.add("strconv")
-		return fmt.Sprintf("if n, err := strconv.ParseFloat(%s, 64); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = n\n\t\t}", src, fail(), dst), nil
+		return guarded("n", "strconv.ParseFloat("+src+", 64)", fail(), assignValue(dst, "n", ptr)), nil
 
 	case protoreflect.BytesKind:
 		im.add("encoding/base64")
-		return fmt.Sprintf("if raw, err := base64.StdEncoding.DecodeString(%s); err != nil {\n\t\t\t%s\n\t\t} else {\n\t\t\t%s = raw\n\t\t}", src, fail(), dst), nil
+		return guarded("raw", "base64.StdEncoding.DecodeString("+src+")", fail(), assignValue(dst, "raw", ptr)), nil
 
 	case protoreflect.EnumKind:
 		// 数字和 proto 里定义的枚举名都接受
 		im.add("strconv")
 		enumName := g.QualifiedGoIdent(f.Enum.GoIdent)
-		return fmt.Sprintf("if n, err := strconv.ParseInt(%s, 10, 32); err == nil {\n\t\t\t%s = %s(n)\n\t\t} else if ev, ok := %s_value[%s]; ok {\n\t\t\t%s = %s(ev)\n\t\t} else {\n\t\t\t%s\n\t\t}",
-			src, dst, enumName, enumName, src, dst, enumName, fail()), nil
+		return fmt.Sprintf(
+			"if n, err := strconv.ParseInt(%s, 10, 32); err == nil {\n\t%s\n"+
+				"} else if ev, ok := %s_value[%s]; ok {\n\t%s\n"+
+				"} else {\n\t%s\n}",
+			src,
+			assignValue(dst, enumName+"(n)", ptr),
+			enumName, src,
+			assignValue(dst, enumName+"(ev)", ptr),
+			fail()), nil
 
 	default:
 		return "", fmt.Errorf("muxkit: 字段 %s 的类型 %s 不能从 query/path 绑定", f.Desc.Name(), f.Desc.Kind())
@@ -477,9 +517,10 @@ func findField(md *protogen.Message, name string) *protogen.Field {
 	return nil
 }
 
-func leadingComment(m *protogen.Method) string {
+// commentLines 把方法的 leading comment 拆成去掉 // 前缀的非空行。
+func commentLines(m *protogen.Method) []string {
 	if m.Comments.Leading.String() == "" {
-		return ""
+		return nil
 	}
 	lines := strings.Split(strings.TrimSpace(m.Comments.Leading.String()), "\n")
 	var kept []string
@@ -489,7 +530,7 @@ func leadingComment(m *protogen.Method) string {
 			kept = append(kept, l)
 		}
 	}
-	return strings.Join(kept, " ")
+	return kept
 }
 
 func sortedPathParams(m map[string]bool) []string {

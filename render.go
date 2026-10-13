@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // Renderer 把 handler 的返回值写进响应。
@@ -13,7 +16,7 @@ type Renderer interface {
 }
 
 // RendererFunc 让普通函数直接充当 Renderer。
-// 代码生成的渲染函数就靠它接进来。
+// 需要特殊渲染逻辑时靠它接进来，不必实现整个接口。
 type RendererFunc func(w http.ResponseWriter, r *http.Request, v any) error
 
 func (f RendererFunc) Render(w http.ResponseWriter, r *http.Request, v any) error {
@@ -39,6 +42,33 @@ func (JSONRenderer) Render(w http.ResponseWriter, r *http.Request, v any) error 
 		return nil
 	}
 	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writeStatus(w, r)
+	_, err = w.Write(b)
+	return err
+}
+
+// ProtoJSONRenderer 用 protojson 渲染 protobuf 消息，非 proto 值退回 JSONRenderer。
+// protoc 插件生成的路由用它：encoding/json 会把 int64 渲染成数字、enum 渲染成数字，
+// 和 protobuf 生态的 JSON 约定（grpc-gateway / protovalidate）对不上。
+type ProtoJSONRenderer struct{}
+
+// Render 实现 Renderer。状态码与自定义头的处理和 JSONRenderer 保持一致。
+func (ProtoJSONRenderer) Render(w http.ResponseWriter, r *http.Request, v any) error {
+	m, ok := v.(proto.Message)
+	if !ok {
+		// 头的处理交给 JSONRenderer，提前 apply 会重复 Add
+		return JSONRenderer{}.Render(w, r, v)
+	}
+	applyCtxHeader(w, r)
+	if isNil(v) {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+	b, err := protojson.Marshal(m)
 	if err != nil {
 		return err
 	}

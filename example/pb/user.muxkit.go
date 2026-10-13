@@ -4,56 +4,51 @@
 package pb
 
 import (
+	"context"
+	muxkit "github.com/plsenp/muxkit"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"io"
-	muxkit "muxkit"
 	"net/http"
-	"reflect"
 	"strconv"
 )
 
+// UserServiceHandler 是 muxkit 的服务接口，方法签名与 protoc-gen-go-grpc 生成的
+// UserServiceServer 一致（不含 mustEmbed），同一个实现可以同时注册 grpc 与 muxkit。
+type UserServiceHandler interface {
+	// 获取单个用户
+	GetUser(context.Context, *GetUserRequest) (*User, error)
+	ListUsers(context.Context, *ListUsersRequest) (*ListUsersResponse, error)
+	CreateUser(context.Context, *CreateUserRequest) (*User, error)
+	// body 只映射到 user 字段，id 仍然走路径
+	UpdateUser(context.Context, *UpdateUserRequest) (*User, error)
+	DeleteUser(context.Context, *DeleteUserRequest) (*Empty, error)
+	// additional_bindings：同一个方法挂两个路由
+	GetUserByEmail(context.Context, *GetUserByEmailRequest) (*User, error)
+}
+
 // RegisterUserServiceRoutes 把 UserService 的实现挂到 HTTP 路由上。
-func RegisterUserServiceRoutes(r *muxkit.Router, srv UserServiceServer) {
+func RegisterUserServiceRoutes(r *muxkit.Router, srv UserServiceHandler) {
 	r.GET("/v1/users/{id}", srv.GetUser).
-		OperationID("GetUser").
-		Tags("UserService").
-		Summary("获取单个用户").
 		BindFunc(bindGetUserRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.GET("/v1/users", srv.ListUsers).
-		OperationID("ListUsers").
-		Tags("UserService").
 		BindFunc(bindListUsersRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.POST("/v1/users", srv.CreateUser).
-		OperationID("CreateUser").
-		Tags("UserService").
 		BindFunc(bindCreateUserRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.PATCH("/v1/users/{id}", srv.UpdateUser).
-		OperationID("UpdateUser").
-		Tags("UserService").
-		Summary("body 只映射到 user 字段，id 仍然走路径").
 		BindFunc(bindUpdateUserRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.DELETE("/v1/users/{id}", srv.DeleteUser).
-		OperationID("DeleteUser").
-		Tags("UserService").
 		BindFunc(bindDeleteUserRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.GET("/v1/users/email/{email}", srv.GetUserByEmail).
-		OperationID("GetUserByEmail").
-		Tags("UserService").
-		Summary("additional_bindings：同一个方法挂两个路由").
 		BindFunc(bindGetUserByEmailRequest).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 	r.GET("/v1/internal/users/{email}", srv.GetUserByEmail).
-		OperationID("GetUserByEmail_1").
-		Tags("UserService").
-		Summary("additional_bindings：同一个方法挂两个路由").
 		BindFunc(bindGetUserByEmailRequest_1).
-		Renderer(muxkit.RendererFunc(renderProtoMessage))
+		Renderer(muxkit.ProtoJSONRenderer{})
 }
 
 // bindGetUserRequest 由 google.api.http 生成：path 取自 URL 模板，body / query 的划分也来自注解。
@@ -169,32 +164,4 @@ func bindGetUserByEmailRequest_1(r *http.Request, dst *GetUserByEmailRequest) er
 		dst.Email = v
 	}
 	return nil
-}
-
-// renderProtoMessage 用 protojson 渲染响应，保证与 protobuf 生态的 JSON 约定一致。
-func renderProtoMessage(w http.ResponseWriter, r *http.Request, v any) error {
-	if v == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
-		w.WriteHeader(http.StatusNoContent)
-		return nil
-	}
-	m, ok := v.(proto.Message)
-	if !ok {
-		return muxkit.JSONRenderer{}.Render(w, r, v)
-	}
-	b, err := protojson.Marshal(m)
-	if err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if c := muxkit.Ctx(r.Context()); c != nil {
-		if code := c.Status(); code != 0 {
-			w.WriteHeader(code)
-		}
-	}
-	_, err = w.Write(b)
-	return err
 }

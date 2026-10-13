@@ -7,9 +7,9 @@ import (
 	"net/http"
 
 	"example.com/demo/pb"
-	"muxkit"
-	"muxkit/adapter/kinopenapi"
-	"muxkit/adapter/validator"
+	"github.com/plsenp/muxkit"
+	"github.com/plsenp/muxkit/adapter/kinopenapi"
+	"github.com/plsenp/muxkit/adapter/validator"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )
@@ -105,6 +105,7 @@ func main() {
 	// 路线一：protobuf —— 路由、绑定都由 protoc 插件生成，
 	// 校验交给 protovalidate，文档交给 gnostic（都不走核心）。
 	pb.RegisterUserServiceRoutes(r, &userService{})
+	pb.RegisterOptionalServiceRoutes(r, &optionalService{})
 
 	// 路线二：传统 API —— struct tag 绑定 + v10 校验 + kin-openapi 文档。
 	// 这条路的 req 完全由手写结构体描述，所以 kin-openapi 能推导出参数。

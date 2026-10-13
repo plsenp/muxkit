@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"muxkit"
-	"muxkit/adapter/kinopenapi"
+	"github.com/plsenp/muxkit"
+	"github.com/plsenp/muxkit/adapter/kinopenapi"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )

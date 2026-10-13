@@ -7,9 +7,9 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
-	muxkit v0.0.0
-	muxkit/adapter/kinopenapi v0.0.0
-	muxkit/adapter/validator v0.0.0
+	github.com/plsenp/muxkit v0.0.0
+	github.com/plsenp/muxkit/adapter/kinopenapi v0.0.0
+	github.com/plsenp/muxkit/adapter/validator v0.0.0
 )
 
 require (
@@ -32,8 +32,8 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
 
-replace muxkit => ../
+replace github.com/plsenp/muxkit => ../
 
-replace muxkit/adapter/kinopenapi => ../adapter/kinopenapi
+replace github.com/plsenp/muxkit/adapter/kinopenapi => ../adapter/kinopenapi
 
-replace muxkit/adapter/validator => ../adapter/validator
+replace github.com/plsenp/muxkit/adapter/validator => ../adapter/validator

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package example.v1;
+
+import "google/api/annotations.proto";
+import "user.proto";
+
+option go_package = "example.com/demo/pb";
+
+// OptionalService 演示 proto3 optional（字段带 presence）的绑定。
+//
+// optional 字段在 Go 里是指针，生成代码必须区分「没传」和「传了零值」：
+// 没传 → 保持 nil；传了 → 指向实际值（哪怕是空串 / 0 / false）。
+service OptionalService {
+  // optional 全部走 query：不传的字段必须保持 nil
+  rpc SearchUsers(SearchUsersRequest) returns (SearchUsersResponse) {
+    option (google.api.http) = {get: "/v1/search"};
+  }
+
+  // optional 走 path：路径参数也可以是 optional
+  rpc GetProfile(GetProfileRequest) returns (Profile) {
+    option (google.api.http) = {get: "/v1/profiles/{id}"};
+  }
+
+  // optional 走 body（body: "*"）：protojson 负责反序列化，只有出现的字段才有值
+  rpc PatchProfile(PatchProfileRequest) returns (Profile) {
+    option (google.api.http) = {patch: "/v1/profiles/{id}" body: "*"};
+  }
+}
+
+message SearchUsersRequest {
+  optional string keyword = 1;
+  optional int32 limit = 2;
+  optional bool include_banned = 3;
+  optional Status status = 4;
+  repeated string tags = 5; // 对照：repeated 不是 optional，永远绑成切片
+  string sort = 6;          // 对照：非 optional 标量，零值和没传无法区分
+}
+
+// 响应把 presence 显式回显出来，测试才能断言「没传」和「传了零值」的区别。
+message SearchUsersResponse {
+  bool has_keyword = 1;
+  bool has_limit = 2;
+  bool has_include_banned = 3;
+  bool has_status = 4;
+  string keyword = 5;
+  int32 limit = 6;
+  bool include_banned = 7;
+  Status status = 8;
+  repeated string tags = 9;
+  string sort = 10;
+}
+
+message GetProfileRequest {
+  optional string id = 1;
+  optional bool with_stats = 2;
+}
+
+message PatchProfileRequest {
+  string id = 1;
+  optional string nickname = 2;
+  optional int32 age = 3;
+}
+
+message Profile {
+  string id = 1;
+  optional string nickname = 2;
+  optional int32 age = 3;
+  bool has_id = 4;
+  bool has_nickname = 5;
+  bool has_age = 6;
+  bool with_stats = 7;
+}
